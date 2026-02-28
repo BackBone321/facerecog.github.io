@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Face Recognition Web App using TensorFlow.js">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Face Recognition">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <!-- TensorFlow.js Library -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.19.0"></script>
+
+  <title>Teachable Machine Classification</title>
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: Arial, sans-serif;
+    }
+    #webcam-container {
+      width: 100%;
+      max-width: 640px;
+      margin: 20px auto;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    video {
+      width: 100%;
+      height: auto;
+      display: block;
+      background: #000;
+    }
+    canvas {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+  <div id="webcam-container" style="width: 100%; height: 100%; display: flex; justify-content: center; align-items: center;"></div>
+  
+  <!-- JavaScript for Direct TensorFlow Model Classification -->
+  <script>
+    let classificationModel = null;
+    let modelMetadata = null;
+    let isModelReady = false;
+    const MODEL_URL = './model/model.json';
+    const METADATA_URL = './model/metadata.json';
+
+    // Load model metadata
+    async function loadMetadata() {
+      try {
+        const response = await fetch(METADATA_URL);
+        modelMetadata = await response.json();
+        console.log('✓ Model metadata loaded:', modelMetadata);
+        return true;
+      } catch (error) {
+        console.error('Error loading metadata:', error);
+        return false;
+      }
+    }
+
+    // Initialize TensorFlow Model
+    async function loadModel() {
+      try {
+        console.log('Loading TensorFlow model...');
+        
+        if (typeof tf === 'undefined') {
+          throw new Error('TensorFlow.js not loaded');
+        }
+
+        // First load metadata
+        const metadataLoaded = await loadMetadata();
+        if (!metadataLoaded) {
+          throw new Error('Failed to load model metadata');
+        }
+
+        // Load the model directly from model.json
+        console.log('Loading model from:', MODEL_URL);
+        classificationModel = await tf.loadLayersModel(MODEL_URL);
+        console.log('✓ TensorFlow model loaded successfully!');
+        console.log('Model summary:', classificationModel.summary());
+        isModelReady = true;
+        return true;
+      } catch (error) {
+        console.error('❌ Error loading model:', error);
+        console.error('Error message:', error.message);
+        isModelReady = false;
+        return false;
+      }
+    }
+
+    // Initialize model loading
+    async function initializeFaceDetection() {
+      try {
+        console.log('initializeFaceDetection called');
+        
+        // Wait for TensorFlow to be available
+        let attempts = 0;
+        while (typeof tf === 'undefined' && attempts < 30) {
+          console.log('Waiting for TensorFlow.js to load... attempt', attempts + 1);
+          await new Promise(resolve => setTimeout(resolve, 300));
+          attempts++;
+        }
+
+        if (typeof tf === 'undefined') {
+          console.error('TensorFlow.js failed to load');
+          return false;
+        }
+        console.log('✓ TensorFlow.js is available');
+
+        // Load the model
+        const success = await loadModel();
+        console.log('Model ready:', success);
+        return success;
+      } catch (error) {
+        console.error('Error in initializeFaceDetection:', error);
+        return false;
+      }
+    }
+
+    // Classify video frame  - synchronous version
+    function detectFaces(videoElement) {
+      if (!videoElement || !isModelReady || !classificationModel || !modelMetadata) {
+        console.warn('detectFaces: video=' + (videoElement ? 'ok' : 'null') + ', ready=' + isModelReady + ', model=' + (classificationModel ? 'ok' : 'null'));
+        return null;
+      }
+
+      try {
+        // Check video is playing
+        if (videoElement.paused || videoElement.ended) {
+          console.log('Video is paused or ended');
+          return null;
+        }
+
+        // Check video has data
+        if (videoElement.readyState !== 4) {
+          console.log('Video not ready, readyState:', videoElement.readyState);
+          return null;
+        }
+
+        console.log('Classifying video frame...');
+        
+        // Prepare input: resize video to 224x224 and normalize
+        const inputSize = 224;
+        const canvas = document.createElement('canvas');
+        canvas.width = inputSize;
+        canvas.height = inputSize;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(videoElement, 0, 0, inputSize, inputSize);
+        
+        // Convert canvas to tensor and normalize
+        let input = tf.browser.fromPixels(canvas).cast('float32');
+        input = tf.image.resizeBilinear(input, [inputSize, inputSize]);
+        input = input.div(tf.scalar(127.5)).sub(tf.scalar(1.0)); // Normalize: (x / 127.5) - 1.0
+        input = input.reshape([1, inputSize, inputSize, 3]);
+        
+        // Run prediction - use dataSync for synchronous results
+        const modelPrediction = classificationModel.predict(input);
+        const predictions = modelPrediction.dataSync ? modelPrediction.dataSync() : modelPrediction.data();
+        const labels = modelMetadata.labels || ['Class 0', 'Class 1'];
+        
+        console.log('Raw predictions:', Array.from(predictions));
+        console.log('Labels:', labels);
+        
+        // Dispose the tensors
+        input.dispose();
+        if (modelPrediction.dispose) {
+          modelPrediction.dispose();
+        }
+        
+        // Find the class with highest confidence
+        let maxConfidence = -1;
+        let topClass = null;
+        const predictionMap = {};
+        
+        for (let i = 0; i < predictions.length && i < labels.length; i++) {
+          const confidence = predictions[i];
+          const label = labels[i].trim();
+          predictionMap[label] = confidence;
+          
+          console.log('Label:', label, 'Confidence:', confidence);
+          
+          if (confidence > maxConfidence) {
+            maxConfidence = confidence;
+            topClass = label;
+          }
+        }
+        
+        console.log('✓ Top class:', topClass, 'Confidence:', maxConfidence);
+        
+        return {
+          count: 1,
+          topClass: topClass,
+          topConfidence: maxConfidence,
+          classes: labels.map(l => l.trim()),
+          predictions: predictionMap
+        };
+      } catch (error) {
+        console.error('Error classifying frame:', error);
+        console.error('Error type:', error.name);
+        console.error('Error message:', error.message);
+        console.error('Error stack:', error.stack);
+        return null;
+      }
+    }
+
+    // Make functions globally available for Dart
+    window.detectFaces = detectFaces;
+    window.initializeFaceDetection = initializeFaceDetection;
+    window.isModelReady = () => isModelReady;
+
+    console.log('Teachable Machine classification script loaded (TensorFlow direct)');
+  </script>
+  
+  <script src="teachable.js"></script>
+</body>
+</html>
