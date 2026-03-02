@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:js' as js;
 import 'dart:html' as html;
-import 'dart:js_util' as js_util;
 
 /// Service class for face recognition operations using TensorFlow.js
 class FaceRecognitionService {
   static final FaceRecognitionService _instance = FaceRecognitionService._internal();
+  static const String webcamContainerId = 'webcam-container';
 
   bool _isInitialized = false;
   bool _isCameraRunning = false;
@@ -85,7 +85,10 @@ class FaceRecognitionService {
     required int height,
   }) async {
     try {
-      if (_isCameraRunning) return true;
+      // Always reset previous state so repeated on/off cycles remain stable.
+      if (_isCameraRunning || _videoElement != null) {
+        stopCamera();
+      }
 
       // Request camera access
       final constraints = {
@@ -95,8 +98,8 @@ class FaceRecognitionService {
         }
       };
 
-      final stream = await html.window.navigator.mediaDevices!
-          .getUserMedia(constraints);
+      final stream =
+          await html.window.navigator.mediaDevices!.getUserMedia(constraints);
 
       // Create video element and make it VISIBLE
       _videoElement = html.VideoElement()
@@ -112,11 +115,12 @@ class FaceRecognitionService {
         ..style.height = 'auto'
         ..style.objectFit = 'cover'
         ..style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+      _videoElement!.setAttribute('playsinline', 'true');
 
       _videoElement!.srcObject = stream;
-      
-      // Append to webcam-container (created in index.html)
-      final container = html.document.querySelector('#webcam-container');
+
+      // Append to webcam-container (created in index.html and rendered in Flutter).
+      final container = html.document.querySelector('#$webcamContainerId');
       if (container != null) {
         container.children.clear();
         container.append(_videoElement!);
@@ -125,8 +129,8 @@ class FaceRecognitionService {
         html.document.body!.append(_videoElement!);
       }
 
-      // Wait for video to start playing before starting detection
-      await Future.delayed(const Duration(milliseconds: 500));
+      // Ensure the element is actually playing before detection starts.
+      await _videoElement!.play();
 
       _isCameraRunning = true;
       return true;
@@ -138,13 +142,20 @@ class FaceRecognitionService {
 
   /// Stop the camera
   void stopCamera() {
-    if (_videoElement != null) {
-      // Stop all tracks
-      final tracks = (_videoElement!.srcObject as html.MediaStream).getTracks();
-      for (var track in tracks) {
-        track.stop();
+    final video = _videoElement;
+    if (video != null) {
+      // Stop all tracks safely.
+      final mediaStream = video.srcObject;
+      if (mediaStream is html.MediaStream) {
+        final tracks = mediaStream.getTracks();
+        for (final track in tracks) {
+          track.stop();
+        }
       }
-      _videoElement!.remove();
+
+      video.pause();
+      video.srcObject = null;
+      video.remove();
       _videoElement = null;
     }
 
