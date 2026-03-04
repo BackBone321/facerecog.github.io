@@ -32,6 +32,8 @@ dependencies:
     sdk: flutter
   web: ^0.5.0
   js: ^0.6.5
+  camera: ^0.11.0+2
+  google_mlkit_face_detection: ^0.11.0
 
 
   # The following adds the Cupertino Icons font to your application.

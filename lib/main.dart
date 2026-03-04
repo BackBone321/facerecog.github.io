@@ -1,14 +1,24 @@
 import 'dart:async';
-import 'dart:html' as html;
-import 'dart:ui_web' as ui_web;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'face/webcam_view_stub.dart'
+    if (dart.library.html) 'face/webcam_view_web.dart' as webcam_view;
 import 'face_recognition_service.dart';
 
 void main() {
-  runApp(const FaceRecognitionApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+  };
+  runZonedGuarded(
+    () => runApp(const FaceRecognitionApp()),
+    (Object error, StackTrace stackTrace) {
+      // ignore: avoid_print
+      print('Uncaught zone error: $error\n$stackTrace');
+    },
+  );
 }
 
 class FaceRecognitionApp extends StatelessWidget {
@@ -36,12 +46,13 @@ class FaceRecognitionPage extends StatefulWidget {
 
 class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
   static const String _webcamViewType = 'webcam-view';
-  static bool _webcamViewRegistered = false;
 
   bool isModelLoaded = false;
   bool isCameraActive = false;
   bool isCameraBusy = false;
-  String statusMessage = 'Loading model...';
+  String statusMessage = kIsWeb
+      ? 'Loading model...'
+      : 'Ready on mobile. Tap Start Camera to begin.';
   String? detectedClass;
   double? confidence;
   Map<String, double> predictions = {};
@@ -52,30 +63,19 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
   @override
   void initState() {
     super.initState();
-    _registerWebcamViewFactory();
+    webcam_view.registerWebcamViewFactory(
+      _webcamViewType,
+      FaceRecognitionService.webcamContainerId,
+    );
     _faceService = FaceRecognitionService();
-    _initializeFaceRecognition();
+    if (kIsWeb) {
+      _initializeFaceRecognition(autoStart: true);
+    } else {
+      isModelLoaded = true;
+    }
   }
 
-  void _registerWebcamViewFactory() {
-    if (!kIsWeb || _webcamViewRegistered) return;
-
-    ui_web.platformViewRegistry.registerViewFactory(_webcamViewType, (int viewId) {
-      return html.document.getElementById(FaceRecognitionService.webcamContainerId) ??
-          (html.DivElement()
-            ..id = FaceRecognitionService.webcamContainerId
-            ..style.width = '100%'
-            ..style.height = '100%'
-            ..style.display = 'flex'
-            ..style.justifyContent = 'center'
-            ..style.alignItems = 'center'
-            ..style.background = '#000');
-    });
-
-    _webcamViewRegistered = true;
-  }
-
-  Future<void> _initializeFaceRecognition() async {
+  Future<void> _initializeFaceRecognition({bool autoStart = false}) async {
     try {
       final success = await _faceService.initialize();
 
@@ -83,11 +83,13 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
       setState(() {
         isModelLoaded = success;
         statusMessage = success
-            ? 'Model loaded. Starting camera...'
-            : 'Model failed to load. Check browser console (F12), then retry.';
+            ? (kIsWeb ? 'Model loaded. Starting camera...' : 'Ready on mobile.')
+            : (kIsWeb
+                ? 'Model failed to load. Check browser console (F12), then retry.'
+                : 'Initialization failed on mobile.');
       });
 
-      if (success && mounted) {
+      if (success && mounted && autoStart) {
         await Future.delayed(const Duration(milliseconds: 400));
         await _startCamera();
       }
@@ -102,7 +104,12 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
   }
 
   Future<void> _startCamera() async {
-    if (!isModelLoaded || isCameraBusy) return;
+    if (isCameraBusy) return;
+
+    if (!isModelLoaded) {
+      await _initializeFaceRecognition(autoStart: false);
+      if (!isModelLoaded) return;
+    }
 
     try {
       setState(() {
@@ -141,9 +148,39 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
     }
   }
 
+  Future<void> _switchCamera() async {
+    if (!isCameraActive || isCameraBusy || !_faceService.supportsCameraSwitch) {
+      return;
+    }
+
+    try {
+      setState(() {
+        isCameraBusy = true;
+        statusMessage = 'Switching camera...';
+      });
+
+      final success = await _faceService.switchCamera(width: 640, height: 480);
+
+      if (!mounted) return;
+      setState(() {
+        isCameraBusy = false;
+        statusMessage = success
+            ? 'Camera switched. Detecting...'
+            : 'Unable to switch camera';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        isCameraBusy = false;
+        statusMessage = 'Switch camera error: $e';
+      });
+    }
+  }
+
   void _startDetectionLoop() {
     _detectionTimer?.cancel();
-    _detectionTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+    _detectionTimer =
+        Timer.periodic(const Duration(milliseconds: 500), (timer) async {
       if (!isCameraActive) {
         timer.cancel();
         return;
@@ -203,8 +240,13 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
                   child: Column(
                     children: [
                       Text(
-                        isModelLoaded ? 'Model Ready' : 'Loading Model',
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                        isModelLoaded
+                            ? (kIsWeb ? 'Model Ready' : 'Mobile Ready')
+                            : 'Loading Model',
+                        style: Theme.of(context)
+                            .textTheme
+                            .headlineSmall
+                            ?.copyWith(
                               color: isModelLoaded ? Colors.green : Colors.red,
                             ),
                       ),
@@ -214,7 +256,7 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
                         style: Theme.of(context).textTheme.bodyMedium,
                         textAlign: TextAlign.center,
                       ),
-                      if (!isModelLoaded) ...[
+                      if (!isModelLoaded && kIsWeb) ...[
                         const SizedBox(height: 15),
                         ElevatedButton.icon(
                           onPressed: _initializeFaceRecognition,
@@ -237,9 +279,10 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
                   alignment: WrapAlignment.center,
                   children: [
                     ElevatedButton.icon(
-                      onPressed: isModelLoaded && !isCameraActive && !isCameraBusy
-                          ? _startCamera
-                          : null,
+                      onPressed:
+                          isModelLoaded && !isCameraActive && !isCameraBusy
+                              ? _startCamera
+                              : null,
                       icon: const Icon(Icons.videocam),
                       label: const Text('Start Camera'),
                     ),
@@ -248,6 +291,15 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
                       icon: const Icon(Icons.videocam_off),
                       label: const Text('Stop Camera'),
                     ),
+                    if (!kIsWeb)
+                      OutlinedButton.icon(
+                        onPressed:
+                            isCameraActive && _faceService.supportsCameraSwitch
+                                ? _switchCamera
+                                : null,
+                        icon: const Icon(Icons.flip_camera_android),
+                        label: const Text('Switch Camera'),
+                      ),
                   ],
                 ),
               ),
@@ -261,14 +313,35 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.black26),
                   ),
-                  child: const AspectRatio(
+                  child: AspectRatio(
                     aspectRatio: 4 / 3,
-                    child: HtmlElementView(viewType: _webcamViewType),
+                    child: webcam_view.buildWebcamView(_webcamViewType),
+                  ),
+                ),
+              if (!kIsWeb)
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 20),
+                  constraints: const BoxConstraints(maxWidth: 700),
+                  decoration: BoxDecoration(
+                    color: Colors.black,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.black26),
+                  ),
+                  child: AspectRatio(
+                    aspectRatio: 3 / 4,
+                    child: _faceService.buildCameraPreview() ??
+                        const Center(
+                          child: Text(
+                            'Camera preview will appear here',
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                        ),
                   ),
                 ),
               if (isCameraActive)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 30, vertical: 20),
                   margin: const EdgeInsets.symmetric(vertical: 20),
                   decoration: BoxDecoration(
                     color: Colors.blue.shade50,
@@ -286,10 +359,11 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
                       const SizedBox(height: 15),
                       Text(
                         detectedClass ?? 'Analyzing...',
-                        style: Theme.of(context).textTheme.displayMedium?.copyWith(
-                              color: Colors.blue,
-                              fontWeight: FontWeight.bold,
-                            ),
+                        style:
+                            Theme.of(context).textTheme.displayMedium?.copyWith(
+                                  color: Colors.blue,
+                                  fontWeight: FontWeight.bold,
+                                ),
                       ),
                       const SizedBox(height: 10),
                       if (confidence != null)
@@ -305,10 +379,12 @@ class _FaceRecognitionPageState extends State<FaceRecognitionPage> {
                             return Padding(
                               padding: const EdgeInsets.symmetric(vertical: 5),
                               child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
                                 children: [
                                   Text(entry.key),
-                                  Text('${(entry.value * 100).toStringAsFixed(1)}%'),
+                                  Text(
+                                      '${(entry.value * 100).toStringAsFixed(1)}%'),
                                 ],
                               ),
                             );
